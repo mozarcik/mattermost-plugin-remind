@@ -2,14 +2,17 @@ package main
 
 import (
 	"fmt"
+	"github.com/mattermost/mattermost-server/mlog"
 	"time"
 	"encoding/json"
 	"strings"
 	"errors"
 	"strconv"
 	"github.com/google/uuid"
+)
 
-	"github.com/mattermost/mattermost-server/model"
+const (
+	DEFAULT_TIME = "9:00AM"
 )
 
 type Occurrence struct {
@@ -26,50 +29,93 @@ type Occurrence struct {
 	Repeat string
 }
 
-func (p *Plugin) CreateOccurrences(request ReminderRequest) ([]Occurrence, error) {
+func (p *Plugin) CreateOccurrences(request *ReminderRequest) error {
 
-	p.API.LogDebug("CreateOccurrences");
-	user, err := p.API.GetUserByUsername(request.Username)
-
-	if err != nil {
-		p.API.LogError("failed to query user %s", request.Username)
-		return []Occurrence{}, err
-	}
+	p.API.LogDebug("CreateOccurrences", request.Reminder.When)
 
 	if strings.HasPrefix(request.Reminder.When, "in") {
-
-		p.API.LogDebug(request.Reminder.When)
-
-		occurrences, inErr := p.in(request.Reminder.When, user)
+		occurrences, inErr := p.in(request.Reminder.When)
 		if inErr != nil {
-			return []Occurrence{}, inErr
+			return inErr
+		}
+
+		return p.addOccurrences(request, occurrences)
+	}
+
+	if strings.HasPrefix(request.Reminder.When, "at") {
+		occurrences, inErr := p.at(request.Reminder.When)
+		if inErr != nil {
+			return inErr
+		}
+
+		return p.addOccurrences(request, occurrences)
+	}
+
+	if strings.HasPrefix(request.Reminder.When, "on") {
+		occurrences, inErr := p.on(request.Reminder.When)
+		if inErr != nil {
+			return inErr
+		}
+
+		return p.addOccurrences(request, occurrences)
+	}
+
+	if strings.HasPrefix(request.Reminder.When, "every") {
+		occurrences, inErr := p.every(request.Reminder.When)
+		if inErr != nil {
+			return inErr
+		}
+
+		return p.addOccurrences(request, occurrences)
+	}
+
+	occurrences, freeErr := p.freeForm(request.Reminder.When)
+	if freeErr != nil {
+		return freeErr
+	}
+
+	return p.addOccurrences(request, occurrences)
+}
+
+func (p *Plugin) addOccurrences(request *ReminderRequest, occurrences []time.Time) error {
+
+	for _, o := range occurrences {
+
+		repeat := ""
+
+		if p.isRepeating(request) {
+			repeat = request.Reminder.When
 		}
 
 		guid, gErr := uuid.NewRandom()
 		if gErr != nil {
 			p.API.LogError("failed to generate guid")
-			return []Occurrence{}, gErr
+			return gErr
 		}
 
-		for _, o := range occurrences {
+		occurrence := Occurrence{guid.String(), request.Username, request.Reminder.Id, o.UTC(), time.Time{}, repeat}
 
-			reminderOccurrence := Occurrence{guid.String(), request.Username, request.Reminder.Id, o.UTC(), time.Time{}, ""}
-
-			p.API.LogDebug("occurrence " + fmt.Sprintf("%v", reminderOccurrence))
-
-			request.Reminder.Occurrences = append(request.Reminder.Occurrences, reminderOccurrence)
-			p.upsertOccurrence(reminderOccurrence)
-
-		}
-
-		return request.Reminder.Occurrences, nil
+		p.upsertOccurrence(occurrence)
+		request.Reminder.Occurrences = append(request.Reminder.Occurrences, occurrence)
 
 	}
 
-	// TODO handle the other when prefix's
-
-	return []Occurrence{}, errors.New("unable to create occurrences")
+	return nil
 }
+
+func (p *Plugin) isRepeating(request *ReminderRequest) bool {
+
+	return strings.Contains(request.Reminder.When, "every") ||
+		strings.Contains(request.Reminder.When, "sundays") ||
+		strings.Contains(request.Reminder.When, "mondays") ||
+		strings.Contains(request.Reminder.When, "tuesdays") ||
+		strings.Contains(request.Reminder.When, "wednesdays") ||
+		strings.Contains(request.Reminder.When, "thursdays") ||
+		strings.Contains(request.Reminder.When, "fridays") ||
+		strings.Contains(request.Reminder.When, "saturdays")
+
+}
+
 
 func (p *Plugin) upsertOccurrence(reminderOccurrence Occurrence) {
 
@@ -99,34 +145,641 @@ func (p *Plugin) upsertOccurrence(reminderOccurrence Occurrence) {
 
 }
 
-func (p *Plugin) in(when string, user *model.User) (times []time.Time, err error) {
+
+func (p *Plugin) at(when string) (times []time.Time, err error) {
+
+	whenTrim := strings.Trim(when, " ")
+	whenSplit := strings.Split(whenTrim, " ")
+	normalizedWhen := strings.ToLower(whenSplit[1])
+
+	if strings.Contains(when, "every") {
+
+		dateTimeSplit := strings.Split(when, " "+"every"+" ")
+		return p.every("every"+" "+dateTimeSplit[1]+" "+dateTimeSplit[0])
+
+	} else if len(whenSplit) >= 3 &&
+		(strings.EqualFold(whenSplit[2], "pm") ||
+			strings.EqualFold(whenSplit[2], "am")) {
+
+		if !strings.Contains(normalizedWhen, ":") {
+			if len(normalizedWhen) >= 3 {
+				hrs := string(normalizedWhen[:len(normalizedWhen)-2])
+				mins := string(normalizedWhen[len(normalizedWhen)-2:])
+				normalizedWhen = hrs + ":" + mins
+			} else {
+				normalizedWhen = normalizedWhen + ":00"
+			}
+		}
+		t, pErr := time.Parse(time.Kitchen, normalizedWhen+strings.ToUpper(whenSplit[2]))
+		if pErr != nil {
+			mlog.Error(fmt.Sprintf("%v", pErr))
+		}
+
+		now := time.Now().Round(time.Hour * time.Duration(24))
+		occurrence := t.AddDate(now.Year(), int(now.Month())-1, now.Day()-1)
+		return []time.Time{p.chooseClosest(&occurrence, true)}, nil
+
+	} else if strings.HasSuffix(normalizedWhen, "pm") ||
+		strings.HasSuffix(normalizedWhen, "am") {
+
+		if !strings.Contains(normalizedWhen, ":") {
+			var s string
+			var s2 string
+			if len(normalizedWhen) == 3 {
+				s = normalizedWhen[:len(normalizedWhen)-2]
+				s2 = normalizedWhen[len(normalizedWhen)-2:]
+			} else if len(normalizedWhen) >= 4 {
+				s = normalizedWhen[:len(normalizedWhen)-4]
+				s2 = normalizedWhen[len(normalizedWhen)-4:]
+			}
+
+			if len(s2) > 2 {
+				normalizedWhen = s + ":" + s2
+			} else {
+				normalizedWhen = s + ":00" + s2
+			}
+
+		}
+		t, pErr := time.Parse(time.Kitchen, strings.ToUpper(normalizedWhen))
+		if pErr != nil {
+			mlog.Error(fmt.Sprintf("%v", pErr))
+		}
+
+		now := time.Now().Round(time.Hour * time.Duration(24))
+		occurrence := t.AddDate(now.Year(), int(now.Month())-1, now.Day()-1)
+		return []time.Time{p.chooseClosest(&occurrence, true)}, nil
+
+	}
+
+	switch normalizedWhen {
+
+	case "noon":
+
+		now := time.Now()
+
+		noon, pErr := time.Parse(time.Kitchen, "12:00PM")
+		if pErr != nil {
+			mlog.Error(fmt.Sprintf("%v", pErr))
+			return []time.Time{}, pErr
+		}
+
+		noon = noon.AddDate(now.Year(), int(now.Month())-1, now.Day()-1)
+		return []time.Time{p.chooseClosest(&noon, true)}, nil
+
+	case "midnight":
+
+		now := time.Now()
+
+		midnight, pErr := time.Parse(time.Kitchen, "12:00AM")
+		if pErr != nil {
+			mlog.Error(fmt.Sprintf("%v", pErr))
+			return []time.Time{}, pErr
+		}
+
+		midnight = midnight.AddDate(now.Year(), int(now.Month())-1, now.Day()-1)
+		return []time.Time{p.chooseClosest(&midnight, true)}, nil
+
+	case "one",
+		"two",
+		"three",
+		"four",
+		"five",
+		"six",
+		"seven",
+		"eight",
+		"nine",
+		"ten",
+		"eleven",
+		"twelve":
+
+		nowkit := time.Now().Format(time.Kitchen)
+		ampm := string(nowkit[len(nowkit)-2:])
+
+		num, wErr := p.wordToNumber(normalizedWhen)
+		if wErr != nil {
+			return []time.Time{}, wErr
+		}
+
+		wordTime, _ := time.Parse(time.Kitchen, strconv.Itoa(num)+":00"+ampm)
+		return []time.Time{p.chooseClosest(&wordTime, false)}, nil
+
+	case "0",
+		"1",
+		"2",
+		"3",
+		"4",
+		"5",
+		"6",
+		"7",
+		"8",
+		"9",
+		"10",
+		"11",
+		"12":
+
+		nowkit := time.Now().Format(time.Kitchen)
+		ampm := string(nowkit[len(nowkit)-2:])
+
+		num, wErr := strconv.Atoi(normalizedWhen)
+		if wErr != nil {
+			return []time.Time{}, wErr
+		}
+
+		wordTime, _ := time.Parse(time.Kitchen, strconv.Itoa(num)+":00"+ampm)
+		return []time.Time{p.chooseClosest(&wordTime, false)}, nil
+
+	default:
+
+		if !strings.Contains(normalizedWhen, ":") && len(normalizedWhen) >= 3 {
+			s := normalizedWhen[:len(normalizedWhen)-2]
+			normalizedWhen = s + ":" + normalizedWhen[len(normalizedWhen)-2:]
+		}
+
+		timeSplit := strings.Split(normalizedWhen, ":")
+		hr, _ := strconv.Atoi(timeSplit[0])
+		ampm := "am"
+		dayInterval := false
+
+		if hr > 11 {
+			ampm = "pm"
+		}
+		if hr > 12 {
+			hr -= 12
+			dayInterval = true
+			timeSplit[0] = strconv.Itoa(hr)
+			normalizedWhen = strings.Join(timeSplit, ":")
+		}
+
+		t, pErr := time.Parse(time.Kitchen, strings.ToUpper(normalizedWhen+ampm))
+		if pErr != nil {
+			return []time.Time{}, pErr
+		}
+
+		now := time.Now().Round(time.Hour * time.Duration(24))
+		occurrence := t.AddDate(now.Year(), int(now.Month())-1, now.Day()-1)
+		return []time.Time{p.chooseClosest(&occurrence, dayInterval)}, nil
+
+	}
+
+	return []time.Time{}, errors.New("could not format 'at'")
+}
+
+func (p *Plugin) in(when string) (times []time.Time, err error) {
 
 	whenSplit := strings.Split(when, " ")
 	value := whenSplit[1]
 	units := whenSplit[len(whenSplit)-1]
 
-	p.API.LogDebug("whenSplit: " + fmt.Sprintf("%v", whenSplit))
-	p.API.LogDebug("value: " + fmt.Sprintf("%v", value))
-	p.API.LogDebug("units: " + fmt.Sprintf("%v", units))
-
-	location, _ := time.LoadLocation(user.Timezone["automaticTimezone"])
-
 	switch units {
-	case "seconds", "second", "secs", "sec", "s":
-		i, _ := strconv.Atoi(value)
+	case "seconds",
+		"second",
+		"secs",
+		"sec",
+		"s":
 
-		occurrence := time.Now().In(location).Round(time.Second).Add(time.Second * time.Duration(i))
-		times = append(times, occurrence)
+		i, e := strconv.Atoi(value)
 
-		p.API.LogDebug("occurrence: " + fmt.Sprintf("%v", occurrence))
-		p.API.LogDebug("times: " + fmt.Sprintf("%v", times))
+		if e != nil {
+			num, wErr := p.wordToNumber(value)
+			if wErr != nil {
+				mlog.Error(fmt.Sprintf("%v", wErr))
+				return []time.Time{}, wErr
+			}
+			i = num
+		}
+
+		times = append(times, time.Now().Round(time.Second).Add(time.Second*time.Duration(i)))
+
 		return times, nil
 
-		//TODO handle the other units
+	case "minutes",
+		"minute",
+		"min":
+
+		i, e := strconv.Atoi(value)
+
+		if e != nil {
+			num, wErr := p.wordToNumber(value)
+			if wErr != nil {
+				mlog.Error(fmt.Sprintf("%v", wErr))
+				return []time.Time{}, wErr
+			}
+			i = num
+		}
+
+		times = append(times, time.Now().Round(time.Second).Add(time.Minute*time.Duration(i)))
+		return times, nil
+
+	case "hours",
+		"hour",
+		"hrs",
+		"hr":
+
+		i, e := strconv.Atoi(value)
+
+		if e != nil {
+			num, wErr := p.wordToNumber(value)
+			if wErr != nil {
+				mlog.Error(fmt.Sprintf("%v", wErr))
+				return []time.Time{}, wErr
+			}
+			i = num
+		}
+
+		times = append(times, time.Now().Round(time.Second).Add(time.Hour*time.Duration(i)))
+
+		return times, nil
+
+	case "days",
+		"day",
+		"d":
+
+		i, e := strconv.Atoi(value)
+
+		if e != nil {
+			num, wErr := p.wordToNumber(value)
+			if wErr != nil {
+				mlog.Error(fmt.Sprintf("%v", wErr))
+				return []time.Time{}, wErr
+			}
+			i = num
+		}
+
+		times = append(times, time.Now().Round(time.Second).Add(time.Hour*24*time.Duration(i)))
+
+		return times, nil
+
+	case "weeks",
+		"week",
+		"wks",
+		"wk":
+
+		i, e := strconv.Atoi(value)
+
+		if e != nil {
+			num, wErr := p.wordToNumber(value)
+			if wErr != nil {
+				mlog.Error(fmt.Sprintf("%v", wErr))
+				return []time.Time{}, wErr
+			}
+			i = num
+		}
+
+		times = append(times, time.Now().Round(time.Second).Add(time.Hour*24*7*time.Duration(i)))
+
+		return times, nil
+
+	case "months",
+		"month",
+		"m":
+
+		i, e := strconv.Atoi(value)
+
+		if e != nil {
+			num, wErr := p.wordToNumber(value)
+			if wErr != nil {
+				mlog.Error(fmt.Sprintf("%v", wErr))
+				return []time.Time{}, wErr
+			}
+			i = num
+		}
+
+		times = append(times, time.Now().Round(time.Second).Add(time.Hour*24*30*time.Duration(i)))
+
+		return times, nil
+
+	case "years",
+		"year",
+		"yr",
+		"y":
+
+		i, e := strconv.Atoi(value)
+
+		if e != nil {
+			num, wErr := p.wordToNumber(value)
+			if wErr != nil {
+				mlog.Error(fmt.Sprintf("%v", wErr))
+				return []time.Time{}, wErr
+			}
+			i = num
+		}
+
+		times = append(times, time.Now().Round(time.Second).Add(time.Hour*24*365*time.Duration(i)))
+
+		return times, nil
 
 	default:
 		return nil, errors.New("could not format 'in'")
 	}
 
 	return nil, errors.New("could not format 'in'")
+}
+
+func (p *Plugin) on(when string) (times []time.Time, err error) {
+
+	whenTrim := strings.Trim(when, " ")
+	whenSplit := strings.Split(whenTrim, " ")
+
+	if len(whenSplit) < 2 {
+		return []time.Time{}, errors.New("not enough arguments")
+	}
+
+	chronoUnit := strings.ToLower(strings.Join(whenSplit[1:], " "))
+	dateTimeSplit := strings.Split(chronoUnit, " "+"at"+" ")
+	chronoDate := dateTimeSplit[0]
+	chronoTime := DEFAULT_TIME
+	if len(dateTimeSplit) > 1 {
+		chronoTime = dateTimeSplit[1]
+	}
+
+	dateUnit, ndErr := p.normalizeDate(chronoDate)
+	if ndErr != nil {
+		return []time.Time{}, ndErr
+	}
+	timeUnit, ntErr := p.normalizeTime(chronoTime)
+	if ntErr != nil {
+		return []time.Time{}, ntErr
+	}
+
+	switch dateUnit {
+	case "sunday",
+		"monday",
+		"tuesday",
+		"wednesday",
+		"thursday",
+		"friday",
+		"saturday":
+
+		todayWeekDayNum := int(time.Now().Weekday())
+		weekDayNum := p.weekDayNumber(dateUnit)
+		day := 0
+
+		if weekDayNum < todayWeekDayNum {
+			day = 7 - (todayWeekDayNum - weekDayNum)
+		} else if weekDayNum >= todayWeekDayNum {
+			day = 7 + (weekDayNum - todayWeekDayNum)
+		}
+
+		timeUnitSplit := strings.Split(timeUnit, ":")
+		hr, _ := strconv.Atoi(timeUnitSplit[0])
+		ampm := strings.ToUpper("am")
+
+		if hr > 11 {
+			ampm = strings.ToUpper("pm")
+		}
+		if hr > 12 {
+			hr -= 12
+			timeUnitSplit[0] = strconv.Itoa(hr)
+		}
+
+		timeUnit = timeUnitSplit[0] + ":" + timeUnitSplit[1] + ampm
+		wallClock, pErr := time.Parse(time.Kitchen, timeUnit)
+		if pErr != nil {
+			return []time.Time{}, pErr
+		}
+
+		nextDay := time.Now().AddDate(0, 0, day)
+		occurrence := wallClock.AddDate(nextDay.Year(), int(nextDay.Month())-1, nextDay.Day()-1)
+
+		return []time.Time{p.chooseClosest(&occurrence, false)}, nil
+
+		break
+	case "mondays",
+		"tuesdays",
+		"wednesdays",
+		"thursdays",
+		"fridays",
+		"saturdays",
+		"sundays":
+
+		return p.every(
+			"every"+" "+
+				dateUnit[:len(dateUnit)-1]+" "+
+				"at"+" "+
+				timeUnit[:len(timeUnit)-3])
+
+		break
+	}
+
+	dateSplit := p.regSplit(dateUnit, "T|Z")
+
+	if len(dateSplit) < 3 {
+		timeSplit := strings.Split(dateSplit[1], "-")
+		t, tErr := time.Parse(time.RFC3339, dateSplit[0]+"T"+timeUnit+"-"+timeSplit[1])
+		if tErr != nil {
+			return []time.Time{}, tErr
+		}
+		return []time.Time{t}, nil
+	} else {
+		t, tErr := time.Parse(time.RFC3339, dateSplit[0]+"T"+timeUnit+"Z"+dateSplit[2])
+		if tErr != nil {
+			return []time.Time{}, tErr
+		}
+		return []time.Time{t}, nil
+	}
+
+}
+
+func (p *Plugin) every(when string) (times []time.Time, err error) {
+
+	whenTrim := strings.Trim(when, " ")
+	whenSplit := strings.Split(whenTrim, " ")
+
+	if len(whenSplit) < 2 {
+		return []time.Time{}, errors.New("not enough arguments")
+	}
+
+	var everyOther bool
+	chronoUnit := strings.ToLower(strings.Join(whenSplit[1:], " "))
+	otherSplit := strings.Split(chronoUnit, "other")
+	if len(otherSplit) == 2 {
+		chronoUnit = strings.Trim(otherSplit[1], " ")
+		everyOther = true
+	}
+	dateTimeSplit := strings.Split(chronoUnit, " "+"at"+" ")
+	chronoDate := dateTimeSplit[0]
+	chronoTime := DEFAULT_TIME
+	if len(dateTimeSplit) > 1 {
+		chronoTime = strings.Trim(dateTimeSplit[1], " ")
+	}
+
+	days := p.regSplit(chronoDate, "(and)|(,)")
+
+	for _, chrono := range days {
+
+		dateUnit, ndErr := p.normalizeDate(strings.Trim(chrono, " "))
+		if ndErr != nil {
+			return []time.Time{}, ndErr
+		}
+		timeUnit, ntErr := p.normalizeTime(chronoTime,)
+		if ntErr != nil {
+			return []time.Time{}, ntErr
+		}
+
+		switch dateUnit {
+		case "day":
+			d := 1
+			if everyOther {
+				d = 2
+			}
+
+			timeUnitSplit := strings.Split(timeUnit, ":")
+			hr, _ := strconv.Atoi(timeUnitSplit[0])
+			ampm := strings.ToUpper("am")
+
+			if hr > 11 {
+				ampm = strings.ToUpper("pm")
+			}
+			if hr > 12 {
+				hr -= 12
+				timeUnitSplit[0] = strconv.Itoa(hr)
+			}
+
+			timeUnit = timeUnitSplit[0] + ":" + timeUnitSplit[1] + ampm
+			wallClock, pErr := time.Parse(time.Kitchen, timeUnit)
+			if pErr != nil {
+				return []time.Time{}, pErr
+			}
+
+			nextDay := time.Now().AddDate(0, 0, d)
+			occurrence := wallClock.AddDate(nextDay.Year(), int(nextDay.Month())-1, nextDay.Day()-1)
+			times = append(times, p.chooseClosest(&occurrence, false))
+
+			break
+		case "sunday",
+			"monday",
+			"tuesday",
+			"wednesday",
+			"thursday",
+			"friday",
+			"saturday":
+
+			todayWeekDayNum := int(time.Now().Weekday())
+			weekDayNum := p.weekDayNumber(dateUnit)
+			day := 0
+
+			if weekDayNum < todayWeekDayNum {
+				day = 7 - (todayWeekDayNum - weekDayNum)
+			} else if weekDayNum >= todayWeekDayNum {
+				day = 7 + (weekDayNum - todayWeekDayNum)
+			}
+
+			timeUnitSplit := strings.Split(timeUnit, ":")
+			hr, _ := strconv.Atoi(timeUnitSplit[0])
+			ampm := strings.ToUpper("am")
+
+			if hr > 11 {
+				ampm = strings.ToUpper("pm")
+			}
+			if hr > 12 {
+				hr -= 12
+				timeUnitSplit[0] = strconv.Itoa(hr)
+			}
+
+			timeUnit = timeUnitSplit[0] + ":" + timeUnitSplit[1] + ampm
+			wallClock, pErr := time.Parse(time.Kitchen, timeUnit)
+			if pErr != nil {
+				return []time.Time{}, pErr
+			}
+
+			nextDay := time.Now().AddDate(0, 0, day)
+			occurrence := wallClock.AddDate(nextDay.Year(), int(nextDay.Month())-1, nextDay.Day()-1)
+			times = append(times, p.chooseClosest(&occurrence, false))
+			break
+		default:
+
+			dateSplit := p.regSplit(dateUnit, "T|Z")
+
+			if len(dateSplit) < 3 {
+				timeSplit := strings.Split(dateSplit[1], "-")
+				t, tErr := time.Parse(time.RFC3339, dateSplit[0]+"T"+timeUnit+"-"+timeSplit[1])
+				if tErr != nil {
+					return []time.Time{}, tErr
+				}
+				times = append(times, t)
+			} else {
+				t, tErr := time.Parse(time.RFC3339, dateSplit[0]+"T"+timeUnit+"Z"+dateSplit[2])
+				if tErr != nil {
+					return []time.Time{}, tErr
+				}
+				times = append(times, t)
+			}
+
+		}
+
+	}
+
+	return times, nil
+
+}
+
+func (p *Plugin) freeForm(when string) (times []time.Time, err error) {
+
+	whenTrim := strings.Trim(when, " ")
+	chronoUnit := strings.ToLower(whenTrim)
+	dateTimeSplit := strings.Split(chronoUnit, " "+"at"+" ")
+	chronoTime := DEFAULT_TIME
+	chronoDate := dateTimeSplit[0]
+
+	if len(dateTimeSplit) > 1 {
+		chronoTime = dateTimeSplit[1]
+	}
+	dateUnit, ndErr := p.normalizeDate(chronoDate)
+	if ndErr != nil {
+		return []time.Time{}, ndErr
+	}
+	timeUnit, ntErr := p.normalizeTime(chronoTime)
+	if ntErr != nil {
+		return []time.Time{}, ntErr
+	}
+	timeUnit = chronoTime
+
+	switch dateUnit {
+	case "today":
+		return p.at("at"+" "+timeUnit)
+	case "tomorrow":
+		return p.on(
+			"on"+" "+
+				time.Now().Add(time.Hour*24).Weekday().String()+" "+
+				"at"+" "+
+				timeUnit)
+	case "everyday":
+		return p.every(
+			"every"+" "+
+				"day"+" "+
+				"at"+" "+
+				timeUnit)
+	case "mondays",
+		"tuesdays",
+		"wednesdays",
+		"thursdays",
+		"fridays",
+		"saturdays",
+		"sundays":
+		return p.every(
+			"every"+" "+
+				dateUnit[:len(dateUnit)-1]+" "+
+				"at"+" "+
+				timeUnit)
+	case "monday",
+		"tuesday",
+		"wednesday",
+		"thursday",
+		"friday",
+		"saturday",
+		"sunday":
+		return p.on(
+			"on"+" "+
+				dateUnit+" "+
+				"at"+" "+
+				timeUnit)
+	default:
+		return p.on(
+			"on"+" "+
+				dateUnit[:len(dateUnit)-1]+" "+
+				"at"+" "+
+				timeUnit)
+	}
+
+	return []time.Time{}, nil
 }

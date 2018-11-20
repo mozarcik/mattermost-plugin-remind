@@ -41,7 +41,11 @@ func (p *Plugin) ScheduleReminder(request ReminderRequest) (string, error) {
 	request.Reminder.Target = target
 	request.Reminder.Message = message
 	request.Reminder.When = when
-	request.Reminder.Occurrences, _ = p.CreateOccurrences(request)
+	pErr = p.CreateOccurrences(&request)
+	if pErr != nil {
+		p.API.LogError("create occurrences failed: " + fmt.Sprintf("%v", pErr))
+		return ExceptionText, nil
+	}
 
 	p.API.LogDebug(fmt.Sprintf("%v", request.Reminder.Occurrences))
 
