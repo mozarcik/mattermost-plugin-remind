@@ -100,10 +100,11 @@ func (p *Plugin) UpsertReminder(request ReminderRequest) {
 }
 
 func (p *Plugin) TriggerReminders() {
+	loc, _ := time.LoadLocation("Europe/Warsaw")
+	key := string(fmt.Sprintf("%v", time.Now().In(loc).Round(time.Second)))
+	bytes, err := p.API.KVGet(key)
 
-	bytes, err := p.API.KVGet(string(fmt.Sprintf("%v", time.Now().Round(time.Second))))
-
-	p.API.LogDebug("*")
+	p.API.LogDebug("Get reminders: " + key)
 
 	if err != nil {
 		p.API.LogError("failed KVGet %s", err)

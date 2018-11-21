@@ -79,6 +79,7 @@ func (p *Plugin) CreateOccurrences(request *ReminderRequest) error {
 
 func (p *Plugin) addOccurrences(request *ReminderRequest, occurrences []time.Time) error {
 
+	loc, _ := time.LoadLocation("Europe/Warsaw")
 	for _, o := range occurrences {
 
 		repeat := ""
@@ -93,7 +94,7 @@ func (p *Plugin) addOccurrences(request *ReminderRequest, occurrences []time.Tim
 			return gErr
 		}
 
-		occurrence := Occurrence{guid.String(), request.Username, request.Reminder.Id, o.UTC(), time.Time{}, repeat}
+		occurrence := Occurrence{guid.String(), request.Username, request.Reminder.Id, o.In(loc), time.Time{}, repeat}
 
 		p.upsertOccurrence(occurrence)
 		request.Reminder.Occurrences = append(request.Reminder.Occurrences, occurrence)
@@ -141,13 +142,15 @@ func (p *Plugin) upsertOccurrence(reminderOccurrence Occurrence) {
 		return
 	}
 
-	p.API.KVSet(string(fmt.Sprintf("%v", reminderOccurrence.Occurrence)), ro)
+	key := string(fmt.Sprintf("%v", reminderOccurrence.Occurrence))
+	p.API.LogDebug("Set occurences " + key)
+	p.API.KVSet(key, ro)
 
 }
 
 
 func (p *Plugin) at(when string) (times []time.Time, err error) {
-
+	loc, _ := time.LoadLocation("Europe/Warsaw")
 	whenTrim := strings.Trim(when, " ")
 	whenSplit := strings.Split(whenTrim, " ")
 	normalizedWhen := strings.ToLower(whenSplit[1])
@@ -170,12 +173,12 @@ func (p *Plugin) at(when string) (times []time.Time, err error) {
 				normalizedWhen = normalizedWhen + ":00"
 			}
 		}
-		t, pErr := time.Parse(time.Kitchen, normalizedWhen+strings.ToUpper(whenSplit[2]))
+		t, pErr := time.ParseInLocation(time.Kitchen, normalizedWhen+strings.ToUpper(whenSplit[2]), loc)
 		if pErr != nil {
 			mlog.Error(fmt.Sprintf("%v", pErr))
 		}
 
-		now := time.Now().Round(time.Hour * time.Duration(24))
+		now := time.Now().In(loc).Round(time.Hour * time.Duration(24))
 		occurrence := t.AddDate(now.Year(), int(now.Month())-1, now.Day()-1)
 		return []time.Time{p.chooseClosest(&occurrence, true)}, nil
 
@@ -200,12 +203,12 @@ func (p *Plugin) at(when string) (times []time.Time, err error) {
 			}
 
 		}
-		t, pErr := time.Parse(time.Kitchen, strings.ToUpper(normalizedWhen))
+		t, pErr := time.ParseInLocation(time.Kitchen, strings.ToUpper(normalizedWhen), loc)
 		if pErr != nil {
 			mlog.Error(fmt.Sprintf("%v", pErr))
 		}
 
-		now := time.Now().Round(time.Hour * time.Duration(24))
+		now := time.Now().In(loc).Round(time.Hour * time.Duration(24))
 		occurrence := t.AddDate(now.Year(), int(now.Month())-1, now.Day()-1)
 		return []time.Time{p.chooseClosest(&occurrence, true)}, nil
 
@@ -215,9 +218,9 @@ func (p *Plugin) at(when string) (times []time.Time, err error) {
 
 	case "noon":
 
-		now := time.Now()
+		now := time.Now().In(loc)
 
-		noon, pErr := time.Parse(time.Kitchen, "12:00PM")
+		noon, pErr := time.ParseInLocation(time.Kitchen, "12:00PM", loc)
 		if pErr != nil {
 			mlog.Error(fmt.Sprintf("%v", pErr))
 			return []time.Time{}, pErr
@@ -228,9 +231,9 @@ func (p *Plugin) at(when string) (times []time.Time, err error) {
 
 	case "midnight":
 
-		now := time.Now()
+		now := time.Now().In(loc)
 
-		midnight, pErr := time.Parse(time.Kitchen, "12:00AM")
+		midnight, pErr := time.ParseInLocation(time.Kitchen, "12:00AM", loc)
 		if pErr != nil {
 			mlog.Error(fmt.Sprintf("%v", pErr))
 			return []time.Time{}, pErr
@@ -252,7 +255,7 @@ func (p *Plugin) at(when string) (times []time.Time, err error) {
 		"eleven",
 		"twelve":
 
-		nowkit := time.Now().Format(time.Kitchen)
+		nowkit := time.Now().In(loc).Format(time.Kitchen)
 		ampm := string(nowkit[len(nowkit)-2:])
 
 		num, wErr := p.wordToNumber(normalizedWhen)
@@ -260,7 +263,7 @@ func (p *Plugin) at(when string) (times []time.Time, err error) {
 			return []time.Time{}, wErr
 		}
 
-		wordTime, _ := time.Parse(time.Kitchen, strconv.Itoa(num)+":00"+ampm)
+		wordTime, _ := time.ParseInLocation(time.Kitchen, strconv.Itoa(num)+":00"+ampm, loc)
 		return []time.Time{p.chooseClosest(&wordTime, false)}, nil
 
 	case "0",
@@ -277,7 +280,7 @@ func (p *Plugin) at(when string) (times []time.Time, err error) {
 		"11",
 		"12":
 
-		nowkit := time.Now().Format(time.Kitchen)
+		nowkit := time.Now().In(loc).Format(time.Kitchen)
 		ampm := string(nowkit[len(nowkit)-2:])
 
 		num, wErr := strconv.Atoi(normalizedWhen)
@@ -285,7 +288,7 @@ func (p *Plugin) at(when string) (times []time.Time, err error) {
 			return []time.Time{}, wErr
 		}
 
-		wordTime, _ := time.Parse(time.Kitchen, strconv.Itoa(num)+":00"+ampm)
+		wordTime, _ := time.ParseInLocation(time.Kitchen, strconv.Itoa(num)+":00"+ampm, loc)
 		return []time.Time{p.chooseClosest(&wordTime, false)}, nil
 
 	default:
@@ -310,12 +313,12 @@ func (p *Plugin) at(when string) (times []time.Time, err error) {
 			normalizedWhen = strings.Join(timeSplit, ":")
 		}
 
-		t, pErr := time.Parse(time.Kitchen, strings.ToUpper(normalizedWhen+ampm))
+		t, pErr := time.ParseInLocation(time.Kitchen, strings.ToUpper(normalizedWhen+ampm), loc)
 		if pErr != nil {
 			return []time.Time{}, pErr
 		}
 
-		now := time.Now().Round(time.Hour * time.Duration(24))
+		now := time.Now().In(loc).Round(time.Hour * time.Duration(24))
 		occurrence := t.AddDate(now.Year(), int(now.Month())-1, now.Day()-1)
 		return []time.Time{p.chooseClosest(&occurrence, dayInterval)}, nil
 
@@ -325,6 +328,7 @@ func (p *Plugin) at(when string) (times []time.Time, err error) {
 }
 
 func (p *Plugin) in(when string) (times []time.Time, err error) {
+	loc, _ := time.LoadLocation("Europe/Warsaw")
 
 	whenSplit := strings.Split(when, " ")
 	value := whenSplit[1]
@@ -348,7 +352,7 @@ func (p *Plugin) in(when string) (times []time.Time, err error) {
 			i = num
 		}
 
-		times = append(times, time.Now().Round(time.Second).Add(time.Second*time.Duration(i)))
+		times = append(times, time.Now().In(loc).Round(time.Second).Add(time.Second*time.Duration(i)))
 
 		return times, nil
 
@@ -367,7 +371,7 @@ func (p *Plugin) in(when string) (times []time.Time, err error) {
 			i = num
 		}
 
-		times = append(times, time.Now().Round(time.Second).Add(time.Minute*time.Duration(i)))
+		times = append(times, time.Now().In(loc).Round(time.Second).Add(time.Minute*time.Duration(i)))
 		return times, nil
 
 	case "hours",
@@ -386,7 +390,7 @@ func (p *Plugin) in(when string) (times []time.Time, err error) {
 			i = num
 		}
 
-		times = append(times, time.Now().Round(time.Second).Add(time.Hour*time.Duration(i)))
+		times = append(times, time.Now().In(loc).Round(time.Second).Add(time.Hour*time.Duration(i)))
 
 		return times, nil
 
@@ -405,7 +409,7 @@ func (p *Plugin) in(when string) (times []time.Time, err error) {
 			i = num
 		}
 
-		times = append(times, time.Now().Round(time.Second).Add(time.Hour*24*time.Duration(i)))
+		times = append(times, time.Now().In(loc).Round(time.Second).Add(time.Hour*24*time.Duration(i)))
 
 		return times, nil
 
@@ -425,7 +429,7 @@ func (p *Plugin) in(when string) (times []time.Time, err error) {
 			i = num
 		}
 
-		times = append(times, time.Now().Round(time.Second).Add(time.Hour*24*7*time.Duration(i)))
+		times = append(times, time.Now().In(loc).Round(time.Second).Add(time.Hour*24*7*time.Duration(i)))
 
 		return times, nil
 
@@ -444,7 +448,7 @@ func (p *Plugin) in(when string) (times []time.Time, err error) {
 			i = num
 		}
 
-		times = append(times, time.Now().Round(time.Second).Add(time.Hour*24*30*time.Duration(i)))
+		times = append(times, time.Now().In(loc).Round(time.Second).Add(time.Hour*24*30*time.Duration(i)))
 
 		return times, nil
 
@@ -464,7 +468,7 @@ func (p *Plugin) in(when string) (times []time.Time, err error) {
 			i = num
 		}
 
-		times = append(times, time.Now().Round(time.Second).Add(time.Hour*24*365*time.Duration(i)))
+		times = append(times, time.Now().In(loc).Round(time.Second).Add(time.Hour*24*365*time.Duration(i)))
 
 		return times, nil
 
@@ -476,6 +480,7 @@ func (p *Plugin) in(when string) (times []time.Time, err error) {
 }
 
 func (p *Plugin) on(when string) (times []time.Time, err error) {
+	loc, _ := time.LoadLocation("Europe/Warsaw")
 
 	whenTrim := strings.Trim(when, " ")
 	whenSplit := strings.Split(whenTrim, " ")
@@ -510,14 +515,16 @@ func (p *Plugin) on(when string) (times []time.Time, err error) {
 		"friday",
 		"saturday":
 
-		todayWeekDayNum := int(time.Now().Weekday())
+		todayWeekDayNum := int(time.Now().In(loc).Weekday())
 		weekDayNum := p.weekDayNumber(dateUnit)
 		day := 0
 
 		if weekDayNum < todayWeekDayNum {
 			day = 7 - (todayWeekDayNum - weekDayNum)
-		} else if weekDayNum >= todayWeekDayNum {
-			day = 7 + (weekDayNum - todayWeekDayNum)
+		} else if weekDayNum > todayWeekDayNum {
+			day = weekDayNum - todayWeekDayNum
+		} else {
+			day = 7
 		}
 
 		timeUnitSplit := strings.Split(timeUnit, ":")
@@ -533,12 +540,12 @@ func (p *Plugin) on(when string) (times []time.Time, err error) {
 		}
 
 		timeUnit = timeUnitSplit[0] + ":" + timeUnitSplit[1] + ampm
-		wallClock, pErr := time.Parse(time.Kitchen, timeUnit)
+		wallClock, pErr := time.ParseInLocation(time.Kitchen, timeUnit, loc)
 		if pErr != nil {
 			return []time.Time{}, pErr
 		}
 
-		nextDay := time.Now().AddDate(0, 0, day)
+		nextDay := time.Now().In(loc).AddDate(0, 0, day)
 		occurrence := wallClock.AddDate(nextDay.Year(), int(nextDay.Month())-1, nextDay.Day()-1)
 
 		return []time.Time{p.chooseClosest(&occurrence, false)}, nil
@@ -565,13 +572,13 @@ func (p *Plugin) on(when string) (times []time.Time, err error) {
 
 	if len(dateSplit) < 3 {
 		timeSplit := strings.Split(dateSplit[1], "-")
-		t, tErr := time.Parse(time.RFC3339, dateSplit[0]+"T"+timeUnit+"-"+timeSplit[1])
+		t, tErr := time.ParseInLocation(time.RFC3339, dateSplit[0]+"T"+timeUnit+"-"+timeSplit[1], loc)
 		if tErr != nil {
 			return []time.Time{}, tErr
 		}
 		return []time.Time{t}, nil
 	} else {
-		t, tErr := time.Parse(time.RFC3339, dateSplit[0]+"T"+timeUnit+"Z"+dateSplit[2])
+		t, tErr := time.ParseInLocation(time.RFC3339, dateSplit[0]+"T"+timeUnit+"Z"+dateSplit[2], loc)
 		if tErr != nil {
 			return []time.Time{}, tErr
 		}
@@ -581,6 +588,7 @@ func (p *Plugin) on(when string) (times []time.Time, err error) {
 }
 
 func (p *Plugin) every(when string) (times []time.Time, err error) {
+	loc, _ := time.LoadLocation("Europe/Warsaw")
 
 	whenTrim := strings.Trim(when, " ")
 	whenSplit := strings.Split(whenTrim, " ")
@@ -636,12 +644,12 @@ func (p *Plugin) every(when string) (times []time.Time, err error) {
 			}
 
 			timeUnit = timeUnitSplit[0] + ":" + timeUnitSplit[1] + ampm
-			wallClock, pErr := time.Parse(time.Kitchen, timeUnit)
+			wallClock, pErr := time.ParseInLocation(time.Kitchen, timeUnit, loc)
 			if pErr != nil {
 				return []time.Time{}, pErr
 			}
 
-			nextDay := time.Now().AddDate(0, 0, d)
+			nextDay := time.Now().In(loc).AddDate(0, 0, d)
 			occurrence := wallClock.AddDate(nextDay.Year(), int(nextDay.Month())-1, nextDay.Day()-1)
 			times = append(times, p.chooseClosest(&occurrence, false))
 
@@ -654,14 +662,16 @@ func (p *Plugin) every(when string) (times []time.Time, err error) {
 			"friday",
 			"saturday":
 
-			todayWeekDayNum := int(time.Now().Weekday())
+			todayWeekDayNum := int(time.Now().In(loc).Weekday())
 			weekDayNum := p.weekDayNumber(dateUnit)
 			day := 0
 
 			if weekDayNum < todayWeekDayNum {
 				day = 7 - (todayWeekDayNum - weekDayNum)
 			} else if weekDayNum >= todayWeekDayNum {
-				day = 7 + (weekDayNum - todayWeekDayNum)
+				day = weekDayNum - todayWeekDayNum
+			} else {
+				day = 7
 			}
 
 			timeUnitSplit := strings.Split(timeUnit, ":")
@@ -677,12 +687,12 @@ func (p *Plugin) every(when string) (times []time.Time, err error) {
 			}
 
 			timeUnit = timeUnitSplit[0] + ":" + timeUnitSplit[1] + ampm
-			wallClock, pErr := time.Parse(time.Kitchen, timeUnit)
+			wallClock, pErr := time.ParseInLocation(time.Kitchen, timeUnit, loc)
 			if pErr != nil {
 				return []time.Time{}, pErr
 			}
 
-			nextDay := time.Now().AddDate(0, 0, day)
+			nextDay := time.Now().In(loc).AddDate(0, 0, day)
 			occurrence := wallClock.AddDate(nextDay.Year(), int(nextDay.Month())-1, nextDay.Day()-1)
 			times = append(times, p.chooseClosest(&occurrence, false))
 			break
@@ -692,13 +702,13 @@ func (p *Plugin) every(when string) (times []time.Time, err error) {
 
 			if len(dateSplit) < 3 {
 				timeSplit := strings.Split(dateSplit[1], "-")
-				t, tErr := time.Parse(time.RFC3339, dateSplit[0]+"T"+timeUnit+"-"+timeSplit[1])
+				t, tErr := time.ParseInLocation(time.RFC3339, dateSplit[0]+"T"+timeUnit+"-"+timeSplit[1], loc)
 				if tErr != nil {
 					return []time.Time{}, tErr
 				}
 				times = append(times, t)
 			} else {
-				t, tErr := time.Parse(time.RFC3339, dateSplit[0]+"T"+timeUnit+"Z"+dateSplit[2])
+				t, tErr := time.ParseInLocation(time.RFC3339, dateSplit[0]+"T"+timeUnit+"Z"+dateSplit[2], loc)
 				if tErr != nil {
 					return []time.Time{}, tErr
 				}
@@ -714,6 +724,7 @@ func (p *Plugin) every(when string) (times []time.Time, err error) {
 }
 
 func (p *Plugin) freeForm(when string) (times []time.Time, err error) {
+	loc, _ := time.LoadLocation("Europe/Warsaw")
 
 	whenTrim := strings.Trim(when, " ")
 	chronoUnit := strings.ToLower(whenTrim)
@@ -738,17 +749,9 @@ func (p *Plugin) freeForm(when string) (times []time.Time, err error) {
 	case "today":
 		return p.at("at"+" "+timeUnit)
 	case "tomorrow":
-		return p.on(
-			"on"+" "+
-				time.Now().Add(time.Hour*24).Weekday().String()+" "+
-				"at"+" "+
-				timeUnit)
+		return p.on("on"+" "+ time.Now().In(loc).Add(time.Hour*24).Weekday().String()+" at "+timeUnit)
 	case "everyday":
-		return p.every(
-			"every"+" "+
-				"day"+" "+
-				"at"+" "+
-				timeUnit)
+		return p.every("every day at " + timeUnit)
 	case "mondays",
 		"tuesdays",
 		"wednesdays",

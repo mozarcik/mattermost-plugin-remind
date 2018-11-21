@@ -234,6 +234,7 @@ func (p *Plugin) findWhen(request *ReminderRequest) error {
 
 
 func (p *Plugin) normalizeDate(text string) (string, error) {
+	loc, _ := time.LoadLocation("Europe/Warsaw")
 
 	date := strings.ToLower(text)
 	if strings.EqualFold("day", date) {
@@ -318,7 +319,7 @@ func (p *Plugin) normalizeDate(text string) (string, error) {
 				}
 			}
 
-			parts = append(parts, fmt.Sprintf("%v", time.Now().Year()))
+			parts = append(parts, fmt.Sprintf("%v", time.Now().In(loc).Year()))
 
 			break
 		case 3:
@@ -404,7 +405,7 @@ func (p *Plugin) normalizeDate(text string) (string, error) {
 
 		switch len(date) {
 		case 2:
-			year := time.Now().Year()
+			year := time.Now().In(loc).Year()
 			month, mErr := strconv.Atoi(date[0])
 			if mErr != nil {
 				return "", mErr
@@ -414,7 +415,7 @@ func (p *Plugin) normalizeDate(text string) (string, error) {
 				return "", dErr
 			}
 
-			return time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.Local).Format(time.RFC3339), nil
+			return time.Date(year, time.Month(month), day, 0, 0, 0, 0, loc).Format(time.RFC3339), nil
 
 		case 3:
 			if len(date[2]) == 2 {
@@ -433,7 +434,7 @@ func (p *Plugin) normalizeDate(text string) (string, error) {
 				return "", dErr
 			}
 
-			return time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.Local).Format(time.RFC3339), nil
+			return time.Date(year, time.Month(month), day, 0, 0, 0, 0, loc).Format(time.RFC3339), nil
 
 		default:
 			return "", errors.New("unrecognized date")
@@ -455,12 +456,12 @@ func (p *Plugin) normalizeDate(text string) (string, error) {
 			dayInt = d
 		}
 
-		month := time.Now().Month()
-		year := time.Now().Year()
+		month := time.Now().In(loc).Month()
+		year := time.Now().In(loc).Year()
 
 		var t time.Time
-		t = time.Date(year, month, dayInt, 0, 0, 0, 0, time.Local)
-		if t.Before(time.Now()) {
+		t = time.Date(year, month, dayInt, 0, 0, 0, 0, loc)
+		if t.Before(time.Now().In(loc)) {
 			t = t.AddDate(0, 1, 0)
 		}
 
@@ -472,6 +473,7 @@ func (p *Plugin) normalizeDate(text string) (string, error) {
 }
 
 func (p *Plugin) normalizeTime(text string) (string, error) {
+	loc, _ := time.LoadLocation("Europe/Warsaw")
 
 	switch text {
 	case "noon":
@@ -497,7 +499,7 @@ func (p *Plugin) normalizeTime(text string) (string, error) {
 			return "", wErr
 		}
 
-		wordTime := time.Now().Round(time.Hour).Add(time.Hour * time.Duration(num+2))
+		wordTime := time.Now().In(loc).Round(time.Hour).Add(time.Hour * time.Duration(num+2))
 
 		dateTimeSplit := p.regSplit(p.chooseClosest(&wordTime, false).Format(time.RFC3339), "T|Z")
 
@@ -544,7 +546,7 @@ func (p *Plugin) normalizeTime(text string) (string, error) {
 			return "", nErr
 		}
 
-		numTime := time.Now().Round(time.Hour).Add(time.Hour * time.Duration(num+2))
+		numTime := time.Now().In(loc).Round(time.Hour).Add(time.Hour * time.Duration(num+2))
 		dateTimeSplit := p.regSplit(p.chooseClosest(&numTime, false).Format(time.RFC3339), "T|Z")
 
 		switch len(dateTimeSplit) {
@@ -568,7 +570,7 @@ func (p *Plugin) normalizeTime(text string) (string, error) {
 	if match, _ := regexp.MatchString("(1[012]|[1-9]):[0-5][0-9](\\s)?(?i)(am|pm)", t); match { // 12:30PM, 12:30 pm
 
 		t = strings.ToUpper(strings.Replace(t, " ", "", -1))
-		test, tErr := time.Parse(time.Kitchen, t)
+		test, tErr := time.ParseInLocation(time.Kitchen, t, loc)
 		if tErr != nil {
 			return "", tErr
 		}
@@ -581,7 +583,7 @@ func (p *Plugin) normalizeTime(text string) (string, error) {
 		return dateTimeSplit[1], nil
 	} else if match, _ := regexp.MatchString("(1[012]|[1-9]):[0-5][0-9]", t); match { // 12:30
 
-		nowkit := time.Now().Format(time.Kitchen)
+		nowkit := time.Now().In(loc).Format(time.Kitchen)
 		ampm := string(nowkit[len(nowkit)-2:])
 		timeUnitSplit := strings.Split(t, ":")
 		hr, _ := strconv.Atoi(timeUnitSplit[0])
@@ -596,7 +598,7 @@ func (p *Plugin) normalizeTime(text string) (string, error) {
 
 		t = timeUnitSplit[0] + ":" + timeUnitSplit[1] + ampm
 
-		test, tErr := time.Parse(time.Kitchen, t)
+		test, tErr := time.ParseInLocation(time.Kitchen, t, loc)
 		if tErr != nil {
 			return "", tErr
 		}
@@ -610,12 +612,12 @@ func (p *Plugin) normalizeTime(text string) (string, error) {
 
 	} else if match, _ := regexp.MatchString("(1[012]|[1-9])(\\s)?(?i)(am|pm)", t); match { // 5PM, 7 am
 
-		nowkit := time.Now().Format(time.Kitchen)
+		nowkit := time.Now().In(loc).Format(time.Kitchen)
 		ampm := string(nowkit[len(nowkit)-2:])
 
 		timeSplit := p.regSplit(t, "(?i)(am|pm)")
 
-		test, tErr := time.Parse(time.Kitchen, timeSplit[0]+":00"+ampm)
+		test, tErr := time.ParseInLocation(time.Kitchen, timeSplit[0]+":00"+ampm, loc)
 		if tErr != nil {
 			return "", tErr
 		}
@@ -821,19 +823,20 @@ func (p *Plugin) regSplit(text string, delimeter string) []string {
 }
 
 func (p *Plugin) chooseClosest(chosen *time.Time, dayInterval bool) time.Time {
+	loc, _ := time.LoadLocation("Europe/Warsaw")
 
-	if dayInterval &&  chosen.Before(time.Now()) {
+	if dayInterval &&  chosen.Before(time.Now().In(loc)) {
 			return chosen.Round(time.Second).Add(time.Hour * 24 * time.Duration(1))
 	}
 	if dayInterval {
 		return *chosen
 	}
 
-	if !chosen.Before(time.Now()) {
+	if !chosen.Before(time.Now().In(loc)) {
 		return *chosen
 	}
 
-	if chosen.Add(time.Hour * 12 * time.Duration(1)).Before(time.Now()) {
+	if chosen.Add(time.Hour * 12 * time.Duration(1)).Before(time.Now().In(loc)) {
 		return chosen.Round(time.Second).Add(time.Hour * 24 * time.Duration(1))
 	}
 
